@@ -19,12 +19,28 @@ variable "subnet1_address_space" {
 variable "subnet2_address_space" {
   default = "10.1.1.0/24"
 }
+
+variable "bucket_name_prefix"{}
+variable "env_tag"{}
+
+#################################################
+#############       Provider       ############## 
+#################################################
 provider "aws" {
   access_key = var.aws_access_key
   secret_key = var.aws_secret_key
   region     = var.region
 }
 
+#################################################
+#############       Local Config   ############## 
+#################################################
+locals {
+  tags = {
+    Env = var.env_tag
+  }
+  s3_bucket_name = "${var.bucket_name_prefix}-${var.env_tag}-${random_integer.rand.result}"
+}
 #################################################
 #############       Data           ############## 
 #################################################
@@ -52,13 +68,19 @@ data "aws_ami" "aws-linux" {
 #################################################
 #############       Resources      ############## 
 #################################################
+resource "random_integer" "rand" {
+  min = 1000
+  max = 9999
+}
 resource "aws_vpc" "terra_vpc" {
   cidr_block           = var.network_address_space
   enable_dns_hostnames = "true"
+  tags = merge(local.tags, {Name = "${var.env_tag}-vpc"})
 }
 
 resource "aws_internet_gateway" "terra_igw" {
   vpc_id = aws_vpc.terra_vpc.id
+  tags = merge(local.tags, {Name = "${var.env_tag}-igw"})
 }
 #################################################
 #############       Network        ############## 
@@ -163,6 +185,7 @@ resource "aws_instance" "terra_nginx1" {
   subnet_id              = aws_subnet.terra_subnet1.id
   vpc_security_group_ids = [aws_security_group.terra_nginx_sg.id]
   key_name               = var.key_name
+  iam_instance_profile = aws_iam_instance_profile.terra_nginx_profile.name
 
   connection {
     type        = "ssh"
@@ -171,13 +194,51 @@ resource "aws_instance" "terra_nginx1" {
     private_key = file(var.private_key_path)
   }
 
+  provisioner "file" {
+    content = <<EOF
+access_key =
+secret_key =
+security_token = 
+use_https = True
+bucket_location = US
+
+EOF
+    destination = "/home/ec2-user/.s3cfg"
+  }
+  
+   provisioner "file" {
+    content = <<EOF
+/var/log/nginx/*log {
+    daily
+    rotate 10
+    missingok
+    compress
+    sharedscripts
+    postrotate
+    endscript
+    lastaction
+        INSTANCE_ID=`curl --silent http://169.254.169.254/latest/meta-data/instance-id`
+        sudo /usr/local/bin/s3cmd sync --config=/home/ec2-user/.s3cfg /var/log/nginx/ s3://${aws_s3_bucket.terra_nginx_bucket.id}/nginx/$INSTANCE_ID/
+    endscript
+}
+EOF
+    destination = "/home/ec2-user/terra-test-nginx"
+  }  
   provisioner "remote-exec" {
     inline = [
       "sudo yum install nginx -y",
       "sudo service nginx start",
-      "echo '<html><head><title>Blue Team Server</title></head><body style=\"background-color:#1F778D\"><p style=\"text-align: center;\"><span style=\"color:#FFFFFF;\"><span style=\"font-size:28px;\">Blue Team</span></span></p></body></html>' | sudo tee /usr/share/nginx/html/index.html"
+      "sudo cp /home/ec2-user/.s3cfg /root/.s3cfg",
+      "sudo cp /home/ec2-user/terra-test-nginx /etc/logrotate.d/nginx",
+      "sudo pip install s3cmd",
+      "s3cmd get s3://${aws_s3_bucket.terra_nginx_bucket.id}/website/index.html .",
+      "s3cmd get s3://${aws_s3_bucket.terra_nginx_bucket.id}/website/Globo_logo_Vert.png .",
+      "sudo cp /home/ec2-user/index.html /usr/share/nginx/html/index.html",
+      "sudo cp /home/ec2-user/Globo_logo_Vert.png /usr/share/nginx/html/Globo_logo_Vert.png",
+      "sudo logrotate -f /etc/logrotate.conf"
     ]
   }
+  tags = merge(local.tags, { Name = "${var.env_tag}-terra_nginx1" })
 }
 
 resource "aws_instance" "terra_nginx2" {
@@ -193,14 +254,124 @@ resource "aws_instance" "terra_nginx2" {
     host        = self.public_ip
     private_key = file(var.private_key_path)
   }
+  provisioner "file" {
+    content = <<EOF
+access_key =
+secret_key =
+security_token = 
+use_https = True
+bucket_location = US
 
+EOF
+    destination = "/home/ec2-user/.s3cfg"
+  }
+  
+   provisioner "file" {
+    content = <<EOF
+/var/log/nginx/*log {
+    daily
+    rotate 10
+    missingok
+    compress
+    sharedscripts
+    postrotate
+    endscript
+    lastaction
+        INSTANCE_ID=`curl --silent http://169.254.169.254/latest/meta-data/instance-id`
+        sudo /usr/local/bin/s3cmd sync --config=/home/ec2-user/.s3cfg /var/log/nginx/ s3://${aws_s3_bucket.terra_nginx_bucket.id}/nginx/$INSTANCE_ID/
+    endscript
+}
+EOF
+    destination = "/home/ec2-user/terra-test-nginx"
+  }  
   provisioner "remote-exec" {
     inline = [
       "sudo yum install nginx -y",
       "sudo service nginx start",
-      "echo '<html><head><title>Green Team Server</title></head><body style=\"background-color:#16a596\"><p style=\"text-align: center;\"><span style=\"color:#FFFFFF;\"><span style=\"font-size:28px;\">Green Team</span></span></p></body></html>' | sudo tee /usr/share/nginx/html/index.html"
+      "sudo cp /home/ec2-user/.s3cfg /root/.s3cfg",
+      "sudo cp /home/ec2-user/terra-test-nginx /etc/logrotate.d/nginx",
+      "sudo pip install s3cmd",
+      "s3cmd get s3://${aws_s3_bucket.terra_nginx_bucket.id}/website/index.html .",
+      "s3cmd get s3://${aws_s3_bucket.terra_nginx_bucket.id}/website/Globo_logo_Vert.png .",
+      "sudo cp /home/ec2-user/index.html /usr/share/nginx/html/index.html",
+      "sudo cp /home/ec2-user/Globo_logo_Vert.png /usr/share/nginx/html/Globo_logo_Vert.png",
+      "sudo logrotate -f /etc/logrotate.conf"
     ]
   }
+  tags = merge(local.tags, { Name = "${var.env_tag}-terra_nginx2" })
+}
+
+#################################################
+#############       IAM Role       ############## 
+#################################################
+resource "aws_iam_role" "allow_terra_nginx_s3" {
+  name = "allow_nginx_s3"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Effect": "Allow",
+      "Sid": ""
+    }
+  ]
+}
+
+EOF
+}
+
+resource "aws_iam_instance_profile" "terra_nginx_profile" {
+  name = "terra_nginx_profile"
+  role = aws_iam_role.allow_terra_nginx_s3.name
+}
+
+resource "aws_iam_role_policy" "allow_s3_all" {
+  name = "allow_s3_all"
+  role = aws_iam_role.allow_terra_nginx_s3.name
+
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": [
+        "s3:*"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+                "arn:aws:s3:::${local.s3_bucket_name}",
+                "arn:aws:s3:::${local.s3_bucket_name}/*"
+            ]
+    }
+  ]
+}  
+EOF
+}
+#################################################
+#############       S3             ############## 
+#################################################
+resource "aws_s3_bucket" "terra_nginx_bucket" {
+  bucket = local.s3_bucket_name
+  acl = "private"
+  force_destroy = true
+  tags = merge(local.tags, { Name = "${var.env_tag}-terra_nginx_bucket"})
+}
+
+resource "aws_s3_bucket_object" "website" {
+  bucket = aws_s3_bucket.terra_nginx_bucket.bucket
+  key = "/website/index.html"
+  source = "./index.html"
+}
+
+resource "aws_s3_bucket_object" "image" {
+  bucket = aws_s3_bucket.terra_nginx_bucket.bucket
+  key = "/website/web.png"
+  source = "./web.png"
 }
 
 #################################################
